@@ -44,6 +44,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final DatabaseHelper _db = DatabaseHelper.instance;
   List<ExpenseRecord> _transactions = [];
+  List<Category> _expenseCategories = [];
+  List<Category> _incomeCategories = [];
   DateTime _selectedMonth = DateTime.now();
   double _totalIncome = 0;
   double _totalExpense = 0;
@@ -51,7 +53,21 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _loadTransactions();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    await _loadCategories();
+    await _loadTransactions();
+  }
+
+  Future<void> _loadCategories() async {
+    final expense = await _db.getExpenseCategories();
+    final income = await _db.getIncomeCategories();
+    setState(() {
+      _expenseCategories = expense;
+      _incomeCategories = income;
+    });
   }
 
   Future<void> _loadTransactions() async {
@@ -99,6 +115,12 @@ class _HomePageState extends State<HomePage> {
           IconButton(
             icon: const Icon(Icons.bar_chart),
             onPressed: () => _showStats(context),
+            tooltip: '統計',
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => _showCategoryManager(context),
+            tooltip: '管理分類',
           ),
         ],
       ),
@@ -202,15 +224,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildTransactionTile(ExpenseRecord t, NumberFormat format) {
-    final category = t.isExpense
-        ? expenseCategories.firstWhere(
-            (c) => c.name == t.category,
-            orElse: () => expenseCategories.last,
-          )
-        : incomeCategories.firstWhere(
-            (c) => c.name == t.category,
-            orElse: () => incomeCategories.last,
-          );
+    final categories = t.isExpense ? _expenseCategories : _incomeCategories;
+    final category = categories.firstWhere(
+      (c) => c.name == t.category,
+      orElse: () => Category(name: t.category, icon: t.categoryIcon, isExpense: t.isExpense),
+    );
 
     return Dismissible(
       key: Key(t.id.toString()),
@@ -258,6 +276,8 @@ class _HomePageState extends State<HomePage> {
       context: context,
       isScrollControlled: true,
       builder: (context) => AddTransactionSheet(
+        expenseCategories: _expenseCategories,
+        incomeCategories: _incomeCategories,
         onSaved: _loadTransactions,
       ),
     );
@@ -270,16 +290,35 @@ class _HomePageState extends State<HomePage> {
       builder: (context) => StatsSheet(
         month: _selectedMonth,
         transactions: _transactions,
+        expenseCategories: _expenseCategories,
+        incomeCategories: _incomeCategories,
       ),
     );
+  }
+
+  void _showCategoryManager(BuildContext context) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const CategoryManagerPage(),
+      ),
+    );
+    _loadData(); // 重新載入分類
   }
 }
 
 // 新增交易的底部表單
 class AddTransactionSheet extends StatefulWidget {
+  final List<Category> expenseCategories;
+  final List<Category> incomeCategories;
   final VoidCallback onSaved;
 
-  const AddTransactionSheet({super.key, required this.onSaved});
+  const AddTransactionSheet({
+    super.key,
+    required this.expenseCategories,
+    required this.incomeCategories,
+    required this.onSaved,
+  });
 
   @override
   State<AddTransactionSheet> createState() => _AddTransactionSheetState();
@@ -292,8 +331,16 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
   final _noteController = TextEditingController();
   
   bool _isExpense = true;
-  String _selectedCategory = '餐飲';
+  Category? _selectedCategory;
   DateTime _selectedDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedCategory = widget.expenseCategories.isNotEmpty 
+        ? widget.expenseCategories.first 
+        : null;
+  }
 
   @override
   void dispose() {
@@ -305,7 +352,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final categories = _isExpense ? expenseCategories : incomeCategories;
+    final categories = _isExpense ? widget.expenseCategories : widget.incomeCategories;
     
     return Padding(
       padding: EdgeInsets.only(
@@ -339,7 +386,8 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                 onSelectionChanged: (value) {
                   setState(() {
                     _isExpense = value.first;
-                    _selectedCategory = _isExpense ? '餐飲' : '薪資';
+                    final cats = _isExpense ? widget.expenseCategories : widget.incomeCategories;
+                    _selectedCategory = cats.isNotEmpty ? cats.first : null;
                   });
                 },
               ),
@@ -379,22 +427,25 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
               // 分類
               Text('分類', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: categories.map((cat) {
-                  final isSelected = _selectedCategory == cat.name;
-                  return ChoiceChip(
-                    label: Text('${cat.icon} ${cat.name}'),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      if (selected) {
-                        setState(() => _selectedCategory = cat.name);
-                      }
-                    },
-                  );
-                }).toList(),
-              ),
+              if (categories.isEmpty)
+                const Text('沒有分類，請先到設定新增')
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: categories.map((cat) {
+                    final isSelected = _selectedCategory?.name == cat.name;
+                    return ChoiceChip(
+                      label: Text('${cat.icon} ${cat.name}'),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        if (selected) {
+                          setState(() => _selectedCategory = cat);
+                        }
+                      },
+                    );
+                  }).toList(),
+                ),
               const SizedBox(height: 16),
               
               // 日期
@@ -429,7 +480,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
               
               // 儲存按鈕
               FilledButton.icon(
-                onPressed: _save,
+                onPressed: _selectedCategory != null ? _save : null,
                 icon: const Icon(Icons.save),
                 label: const Text('儲存'),
               ),
@@ -443,11 +494,13 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_selectedCategory == null) return;
 
     final record = ExpenseRecord(
       title: _titleController.text,
       amount: double.parse(_amountController.text),
-      category: _selectedCategory,
+      category: _selectedCategory!.name,
+      categoryIcon: _selectedCategory!.icon,
       isExpense: _isExpense,
       date: _selectedDate,
       note: _noteController.text.isEmpty ? null : _noteController.text,
@@ -469,11 +522,15 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
 class StatsSheet extends StatelessWidget {
   final DateTime month;
   final List<ExpenseRecord> transactions;
+  final List<Category> expenseCategories;
+  final List<Category> incomeCategories;
 
   const StatsSheet({
     super.key,
     required this.month,
     required this.transactions,
+    required this.expenseCategories,
+    required this.incomeCategories,
   });
 
   @override
@@ -533,7 +590,7 @@ class StatsSheet extends StatelessWidget {
                       ...expenseByCategory.entries.map((e) {
                         final cat = expenseCategories.firstWhere(
                           (c) => c.name == e.key,
-                          orElse: () => expenseCategories.last,
+                          orElse: () => Category(name: e.key, icon: '📦', isExpense: true),
                         );
                         return ListTile(
                           leading: Text(cat.icon, style: const TextStyle(fontSize: 24)),
@@ -558,7 +615,7 @@ class StatsSheet extends StatelessWidget {
                       ...incomeByCategory.entries.map((e) {
                         final cat = incomeCategories.firstWhere(
                           (c) => c.name == e.key,
-                          orElse: () => incomeCategories.last,
+                          orElse: () => Category(name: e.key, icon: '💵', isExpense: false),
                         );
                         return ListTile(
                           leading: Text(cat.icon, style: const TextStyle(fontSize: 24)),
@@ -588,5 +645,320 @@ class StatsSheet extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+// ========== 分類管理頁面 ==========
+class CategoryManagerPage extends StatefulWidget {
+  const CategoryManagerPage({super.key});
+
+  @override
+  State<CategoryManagerPage> createState() => _CategoryManagerPageState();
+}
+
+class _CategoryManagerPageState extends State<CategoryManagerPage>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  final DatabaseHelper _db = DatabaseHelper.instance;
+  List<Category> _expenseCategories = [];
+  List<Category> _incomeCategories = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _loadCategories();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadCategories() async {
+    final expense = await _db.getExpenseCategories();
+    final income = await _db.getIncomeCategories();
+    setState(() {
+      _expenseCategories = expense;
+      _incomeCategories = income;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('⚙️ 管理分類'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: '支出分類'),
+            Tab(text: '收入分類'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildCategoryList(_expenseCategories, true),
+          _buildCategoryList(_incomeCategories, false),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showAddCategoryDialog(_tabController.index == 0),
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  Widget _buildCategoryList(List<Category> categories, bool isExpense) {
+    if (categories.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.category_outlined, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text('沒有${isExpense ? "支出" : "收入"}分類', style: TextStyle(color: Colors.grey[600])),
+            const SizedBox(height: 8),
+            const Text('點擊 + 新增'),
+          ],
+        ),
+      );
+    }
+
+    return ReorderableListView.builder(
+      itemCount: categories.length,
+      onReorder: (oldIndex, newIndex) async {
+        if (newIndex > oldIndex) newIndex--;
+        setState(() {
+          final item = categories.removeAt(oldIndex);
+          categories.insert(newIndex, item);
+        });
+        // 更新排序
+        for (int i = 0; i < categories.length; i++) {
+          await _db.updateCategory(categories[i].copyWith(sortOrder: i));
+        }
+      },
+      itemBuilder: (context, index) {
+        final cat = categories[index];
+        return ListTile(
+          key: ValueKey(cat.id),
+          leading: Text(cat.icon, style: const TextStyle(fontSize: 28)),
+          title: Text(cat.name),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.edit),
+                onPressed: () => _showEditCategoryDialog(cat),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                onPressed: () => _confirmDelete(cat),
+              ),
+              const Icon(Icons.drag_handle),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showAddCategoryDialog(bool isExpense) {
+    showDialog(
+      context: context,
+      builder: (context) => CategoryEditDialog(
+        isExpense: isExpense,
+        onSaved: _loadCategories,
+      ),
+    );
+  }
+
+  void _showEditCategoryDialog(Category category) {
+    showDialog(
+      context: context,
+      builder: (context) => CategoryEditDialog(
+        category: category,
+        isExpense: category.isExpense,
+        onSaved: _loadCategories,
+      ),
+    );
+  }
+
+  void _confirmDelete(Category category) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('確認刪除'),
+        content: Text('確定要刪除「${category.icon} ${category.name}」嗎？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await _db.deleteCategory(category.id!);
+              _loadCategories();
+              if (mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('已刪除')),
+                );
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('刪除'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 分類編輯對話框
+class CategoryEditDialog extends StatefulWidget {
+  final Category? category;
+  final bool isExpense;
+  final VoidCallback onSaved;
+
+  const CategoryEditDialog({
+    super.key,
+    this.category,
+    required this.isExpense,
+    required this.onSaved,
+  });
+
+  @override
+  State<CategoryEditDialog> createState() => _CategoryEditDialogState();
+}
+
+class _CategoryEditDialogState extends State<CategoryEditDialog> {
+  final _nameController = TextEditingController();
+  String _selectedIcon = '📦';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.category != null) {
+      _nameController.text = widget.category!.name;
+      _selectedIcon = widget.category!.icon;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = widget.category != null;
+
+    return AlertDialog(
+      title: Text(isEditing ? '編輯分類' : '新增${widget.isExpense ? "支出" : "收入"}分類'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 名稱輸入
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: '分類名稱',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            
+            // 圖示選擇
+            const Text('選擇圖示'),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 200,
+              width: double.maxFinite,
+              child: GridView.builder(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 6,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                ),
+                itemCount: availableIcons.length,
+                itemBuilder: (context, index) {
+                  final icon = availableIcons[index];
+                  final isSelected = _selectedIcon == icon;
+                  return GestureDetector(
+                    onTap: () => setState(() => _selectedIcon = icon),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : Colors.grey[200],
+                        borderRadius: BorderRadius.circular(8),
+                        border: isSelected
+                            ? Border.all(
+                                color: Theme.of(context).colorScheme.primary,
+                                width: 2,
+                              )
+                            : null,
+                      ),
+                      child: Center(
+                        child: Text(icon, style: const TextStyle(fontSize: 24)),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: const Text('儲存'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _save() async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('請輸入分類名稱')),
+      );
+      return;
+    }
+
+    final db = DatabaseHelper.instance;
+
+    if (widget.category != null) {
+      // 編輯現有分類
+      await db.updateCategory(widget.category!.copyWith(
+        name: name,
+        icon: _selectedIcon,
+      ));
+    } else {
+      // 新增分類
+      await db.insertCategory(Category(
+        name: name,
+        icon: _selectedIcon,
+        isExpense: widget.isExpense,
+      ));
+    }
+
+    widget.onSaved();
+    if (mounted) {
+      Navigator.pop(context);
+    }
   }
 }
