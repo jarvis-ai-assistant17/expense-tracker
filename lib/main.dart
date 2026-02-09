@@ -364,69 +364,34 @@ class _HomePageState extends State<HomePage> {
     final scanner = ReceiptScanner();
     
     try {
-      // 顯示載入中
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(
-          child: Card(
-            child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('處理中...'),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-
       // 取得圖片
       final File? imageFile = fromCamera
           ? await scanner.takePhoto()
           : await scanner.pickFromGallery();
 
-      if (imageFile == null) {
-        if (mounted) Navigator.pop(context); // 關閉載入對話框
-        return;
-      }
-
-      // 掃描發票
-      final result = await scanner.scanReceipt(imageFile);
+      if (imageFile == null) return;
       
       if (mounted) {
-        Navigator.pop(context); // 關閉載入對話框
-        
-        // 顯示掃描結果
-        _showScanResult(context, result, imageFile);
+        // 顯示照片並填寫表單
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          builder: (context) => PhotoEntrySheet(
+            imageFile: imageFile,
+            expenseCategories: _expenseCategories,
+            onSaved: _loadTransactions,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
-        Navigator.pop(context); // 關閉載入對話框
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('掃描失敗: $e')),
+          SnackBar(content: Text('拍照失敗: $e')),
         );
       }
     } finally {
       scanner.dispose();
     }
-  }
-
-  void _showScanResult(BuildContext context, ScanResult result, File imageFile) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => ScanResultSheet(
-        result: result,
-        imageFile: imageFile,
-        expenseCategories: _expenseCategories,
-        onSaved: _loadTransactions,
-      ),
-    );
   }
 }
 
@@ -1086,26 +1051,24 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
   }
 }
 
-// ========== 掃描結果表單 ==========
-class ScanResultSheet extends StatefulWidget {
-  final ScanResult result;
+// ========== 拍照記帳表單 ==========
+class PhotoEntrySheet extends StatefulWidget {
   final File imageFile;
   final List<Category> expenseCategories;
   final VoidCallback onSaved;
 
-  const ScanResultSheet({
+  const PhotoEntrySheet({
     super.key,
-    required this.result,
     required this.imageFile,
     required this.expenseCategories,
     required this.onSaved,
   });
 
   @override
-  State<ScanResultSheet> createState() => _ScanResultSheetState();
+  State<PhotoEntrySheet> createState() => _PhotoEntrySheetState();
 }
 
-class _ScanResultSheetState extends State<ScanResultSheet> {
+class _PhotoEntrySheetState extends State<PhotoEntrySheet> {
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _amountController = TextEditingController();
@@ -1113,25 +1076,11 @@ class _ScanResultSheetState extends State<ScanResultSheet> {
   
   Category? _selectedCategory;
   DateTime _selectedDate = DateTime.now();
-  bool _showRawText = false;
+  bool _showImage = true;
 
   @override
   void initState() {
     super.initState();
-    
-    // 從掃描結果填入
-    if (widget.result.amount != null) {
-      _amountController.text = widget.result.amount!.toStringAsFixed(
-        widget.result.amount! == widget.result.amount!.roundToDouble() ? 0 : 2
-      );
-    }
-    if (widget.result.storeName != null) {
-      _titleController.text = widget.result.storeName!;
-    }
-    if (widget.result.date != null) {
-      _selectedDate = widget.result.date!;
-    }
-    
     _selectedCategory = widget.expenseCategories.isNotEmpty
         ? widget.expenseCategories.first
         : null;
@@ -1166,53 +1115,27 @@ class _ScanResultSheetState extends State<ScanResultSheet> {
                 children: [
                   const Expanded(
                     child: Text(
-                      '📷 掃描結果',
+                      '📷 拍照記帳',
                       style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                   ),
                   TextButton(
-                    onPressed: () => setState(() => _showRawText = !_showRawText),
-                    child: Text(_showRawText ? '隱藏原文' : '顯示原文'),
+                    onPressed: () => setState(() => _showImage = !_showImage),
+                    child: Text(_showImage ? '隱藏照片' : '顯示照片'),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
               
-              // 顯示掃描到的金額選項
-              if (widget.result.allAmounts.isNotEmpty) ...[
-                const Text('偵測到的金額：', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                const SizedBox(height: 4),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: widget.result.allAmounts.map((amt) {
-                    final isSelected = _amountController.text == amt;
-                    return ActionChip(
-                      label: Text('\$$amt'),
-                      backgroundColor: isSelected ? Theme.of(context).colorScheme.primaryContainer : null,
-                      onPressed: () {
-                        setState(() => _amountController.text = amt);
-                      },
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 16),
-              ],
-              
-              // 原始文字（可展開）
-              if (_showRawText) ...[
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  constraints: const BoxConstraints(maxHeight: 150),
-                  child: SingleChildScrollView(
-                    child: Text(
-                      widget.result.rawText.isEmpty ? '（無法辨識文字）' : widget.result.rawText,
-                      style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-                    ),
+              // 照片預覽
+              if (_showImage) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.file(
+                    widget.imageFile,
+                    height: 150,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -1232,6 +1155,7 @@ class _ScanResultSheetState extends State<ScanResultSheet> {
                   if (double.tryParse(value) == null) return '請輸入有效數字';
                   return null;
                 },
+                autofocus: true,
               ),
               const SizedBox(height: 16),
               
