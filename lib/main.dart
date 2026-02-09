@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'models/transaction.dart';
 import 'services/database_helper.dart';
+import 'services/receipt_scanner.dart';
 
 void main() {
   runApp(const ExpenseTrackerApp());
@@ -198,10 +200,22 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAddDialog(context),
-        icon: const Icon(Icons.add),
-        label: const Text('記一筆'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton(
+            heroTag: 'scan',
+            onPressed: () => _showScanOptions(context),
+            child: const Icon(Icons.camera_alt),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'add',
+            onPressed: () => _showAddDialog(context),
+            icon: const Icon(Icons.add),
+            label: const Text('記一筆'),
+          ),
+        ],
       ),
     );
   }
@@ -304,6 +318,115 @@ class _HomePageState extends State<HomePage> {
       ),
     );
     _loadData(); // 重新載入分類
+  }
+
+  void _showScanOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '📷 掃描發票/收據',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.camera_alt, size: 32),
+                title: const Text('拍照'),
+                subtitle: const Text('使用相機拍攝發票'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _scanReceipt(context, fromCamera: true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library, size: 32),
+                title: const Text('從相簿選擇'),
+                subtitle: const Text('選擇已拍好的照片'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _scanReceipt(context, fromCamera: false);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _scanReceipt(BuildContext context, {required bool fromCamera}) async {
+    final scanner = ReceiptScanner();
+    
+    try {
+      // 顯示載入中
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: Card(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('處理中...'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      // 取得圖片
+      final File? imageFile = fromCamera
+          ? await scanner.takePhoto()
+          : await scanner.pickFromGallery();
+
+      if (imageFile == null) {
+        if (mounted) Navigator.pop(context); // 關閉載入對話框
+        return;
+      }
+
+      // 掃描發票
+      final result = await scanner.scanReceipt(imageFile);
+      
+      if (mounted) {
+        Navigator.pop(context); // 關閉載入對話框
+        
+        // 顯示掃描結果
+        _showScanResult(context, result, imageFile);
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // 關閉載入對話框
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('掃描失敗: $e')),
+        );
+      }
+    } finally {
+      scanner.dispose();
+    }
+  }
+
+  void _showScanResult(BuildContext context, ScanResult result, File imageFile) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => ScanResultSheet(
+        result: result,
+        imageFile: imageFile,
+        expenseCategories: _expenseCategories,
+        onSaved: _loadTransactions,
+      ),
+    );
   }
 }
 
@@ -959,6 +1082,264 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
     widget.onSaved();
     if (mounted) {
       Navigator.pop(context);
+    }
+  }
+}
+
+// ========== 掃描結果表單 ==========
+class ScanResultSheet extends StatefulWidget {
+  final ScanResult result;
+  final File imageFile;
+  final List<Category> expenseCategories;
+  final VoidCallback onSaved;
+
+  const ScanResultSheet({
+    super.key,
+    required this.result,
+    required this.imageFile,
+    required this.expenseCategories,
+    required this.onSaved,
+  });
+
+  @override
+  State<ScanResultSheet> createState() => _ScanResultSheetState();
+}
+
+class _ScanResultSheetState extends State<ScanResultSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _titleController = TextEditingController();
+  final _amountController = TextEditingController();
+  final _noteController = TextEditingController();
+  
+  Category? _selectedCategory;
+  DateTime _selectedDate = DateTime.now();
+  bool _showRawText = false;
+
+  @override
+  void initState() {
+    super.initState();
+    
+    // 從掃描結果填入
+    if (widget.result.amount != null) {
+      _amountController.text = widget.result.amount!.toStringAsFixed(
+        widget.result.amount! == widget.result.amount!.roundToDouble() ? 0 : 2
+      );
+    }
+    if (widget.result.storeName != null) {
+      _titleController.text = widget.result.storeName!;
+    }
+    if (widget.result.date != null) {
+      _selectedDate = widget.result.date!;
+    }
+    
+    _selectedCategory = widget.expenseCategories.isNotEmpty
+        ? widget.expenseCategories.first
+        : null;
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+        left: 16,
+        right: 16,
+        top: 16,
+      ),
+      child: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 標題
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '📷 掃描結果',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _showRawText = !_showRawText),
+                    child: Text(_showRawText ? '隱藏原文' : '顯示原文'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              
+              // 顯示掃描到的金額選項
+              if (widget.result.allAmounts.isNotEmpty) ...[
+                const Text('偵測到的金額：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: widget.result.allAmounts.map((amt) {
+                    final isSelected = _amountController.text == amt;
+                    return ActionChip(
+                      label: Text('\$$amt'),
+                      backgroundColor: isSelected ? Theme.of(context).colorScheme.primaryContainer : null,
+                      onPressed: () {
+                        setState(() => _amountController.text = amt);
+                      },
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+              ],
+              
+              // 原始文字（可展開）
+              if (_showRawText) ...[
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  constraints: const BoxConstraints(maxHeight: 150),
+                  child: SingleChildScrollView(
+                    child: Text(
+                      widget.result.rawText.isEmpty ? '（無法辨識文字）' : widget.result.rawText,
+                      style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              
+              // 金額
+              TextFormField(
+                controller: _amountController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '金額',
+                  prefixText: '\$ ',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return '請輸入金額';
+                  if (double.tryParse(value) == null) return '請輸入有效數字';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              
+              // 名稱
+              TextFormField(
+                controller: _titleController,
+                decoration: const InputDecoration(
+                  labelText: '項目名稱',
+                  hintText: '例：午餐、加油',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return '請輸入名稱';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              
+              // 分類
+              Text('分類', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              if (widget.expenseCategories.isEmpty)
+                const Text('沒有分類，請先到設定新增')
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: widget.expenseCategories.map((cat) {
+                    final isSelected = _selectedCategory?.name == cat.name;
+                    return ChoiceChip(
+                      label: Text('${cat.icon} ${cat.name}'),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        if (selected) {
+                          setState(() => _selectedCategory = cat);
+                        }
+                      },
+                    );
+                  }).toList(),
+                ),
+              const SizedBox(height: 16),
+              
+              // 日期
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.calendar_today),
+                title: Text(DateFormat('yyyy/MM/dd').format(_selectedDate)),
+                onTap: () async {
+                  final date = await showDatePicker(
+                    context: context,
+                    initialDate: _selectedDate,
+                    firstDate: DateTime(2020),
+                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                  );
+                  if (date != null) {
+                    setState(() => _selectedDate = date);
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+              
+              // 備註
+              TextFormField(
+                controller: _noteController,
+                decoration: const InputDecoration(
+                  labelText: '備註（選填）',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+              const SizedBox(height: 24),
+              
+              // 儲存按鈕
+              FilledButton.icon(
+                onPressed: _selectedCategory != null ? _save : null,
+                icon: const Icon(Icons.save),
+                label: const Text('儲存'),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_selectedCategory == null) return;
+
+    final record = ExpenseRecord(
+      title: _titleController.text,
+      amount: double.parse(_amountController.text),
+      category: _selectedCategory!.name,
+      categoryIcon: _selectedCategory!.icon,
+      isExpense: true,
+      date: _selectedDate,
+      note: _noteController.text.isEmpty ? null : _noteController.text,
+    );
+
+    await DatabaseHelper.instance.insertTransaction(record);
+    widget.onSaved();
+    
+    if (mounted) {
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已儲存 ✓')),
+      );
     }
   }
 }
