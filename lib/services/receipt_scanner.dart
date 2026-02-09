@@ -20,9 +20,7 @@ class ScanResult {
 
 class ReceiptScanner {
   final ImagePicker _picker = ImagePicker();
-  final TextRecognizer _textRecognizer = TextRecognizer(
-    script: TextRecognitionScript.chinese,
-  );
+  final TextRecognizer _textRecognizer = TextRecognizer();
 
   // 從相機拍照
   Future<File?> takePhoto() async {
